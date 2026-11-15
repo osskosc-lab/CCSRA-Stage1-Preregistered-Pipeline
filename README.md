@@ -6,10 +6,16 @@
 
 This repository contains the frozen, self-auditing Python implementation of the CCSRA Stage 1 preregistration. It enforces the epistemic claim firewall (L0–L3 only), stream-isolated Common Random Numbers, Gate 0A/0B/0C, surrogate rules, and the non-compensatory decision state machine.
 
+## Key Revisions (thresholds unchanged)
+
+- Static \((I - P_U)\) projection applied only to the temporal mean (preserves autonomous flow)
+- Sign-free polar / fractional-power sensory frame (eliminates eigenvector sign ambiguity)
+- Gate 0A irregular-burst nucleation dynamics calibrated to \(\mathrm{CV_{IBNSI}} \approx 0.5\)
+
 ## Quick Start
 
 ```bash
-pip install numpy scipy
+pip install -r requirements.txt
 python ccsra_stage1_preregistered_pipeline.py --n-seeds 4 --out-json test_manifest.json
 ```
 
@@ -19,12 +25,24 @@ For the full confirmatory analysis (N=40):
 python ccsra_stage1_preregistered_pipeline.py --n-seeds 40 --t-wash 60.0 --bin-ms 5.0 --out-json manifest_main.json
 ```
 
+## Donor Connection Tests
+
+```bash
+python ccsra_stage1_donor_connection_tests.py
+```
+
+This suite verifies:
+
+- Wagenaar et al. (2006) simple-text loaders (daily / stim / dense)
+- DishBrain open-loop NF & RST (closed-loop STIM/SIL/PONG blocked)
+- CRCNS hc-8 SOURCE_SWAP
+- JISI-D / TR-SHIFT surrogates
+- Qualia firewall
+- Brian2 equation port
+
 ## Real Donor Data
 
-The loaders `load_wagenaar_simple_text` and `load_dishbrain_open_loop` are ready for public MEA files:
-
-- Wagenaar et al. (2006) simple-text spike trains
-- DishBrain / Kagan et al. (2022) open-loop NF or RST conditions only (STIM/SIL raise an immediate exception)
+The loaders `load_wagenaar_simple_text`, `load_dishbrain_open_loop`, and `load_crcns_hc8_simple` are ready for public MEA files.
 
 Closed-loop data is explicitly blocked.
 
