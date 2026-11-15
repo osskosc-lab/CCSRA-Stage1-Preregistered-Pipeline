@@ -205,6 +205,17 @@ def load_crcns_hc8_simple(
 ) -> np.ndarray:
     return load_wagenaar_simple_text(filepath, n_channels=n_channels, duration_sec=duration_sec, bin_ms=bin_ms)
 
+def build_biophysical_donor_generator(dim_lat: int, freqs: List[float], rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray]:
+    """Biophysical donor latent generator for fixture tests."""
+    B = np.zeros((dim_lat, dim_lat), dtype=np.float64)
+    for idx, om in enumerate(freqs):
+        if 2 * idx + 1 < dim_lat:
+            B[2 * idx, 2 * idx + 1] = om
+            B[2 * idx + 1, 2 * idx] = -om
+    Q = make_orthogonal_matrix(dim_lat, rng)
+    J_asym = Q @ B @ Q.T
+    return J_asym, Q
+
 # ============================================================================
 # 5. SURROGATES
 # ============================================================================
@@ -248,7 +259,6 @@ def surrogate_shuffled(spike_raster: np.ndarray, rng: np.random.Generator) -> np
     return out
 
 def surrogate_linear_ssm_null(trace_E: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    # Linear SSM null: fit A, then simulate from random init with same noise level
     T, D = trace_E.shape
     if T < 3:
         return trace_E.copy()
@@ -292,14 +302,12 @@ def debiased_linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
     return float(np.clip(val, -1.0, 1.0))
 
 def remove_probe_projection(Y_tensor: np.ndarray, U_probes: np.ndarray) -> np.ndarray:
-    # Static projection on temporal mean only
     if Y_tensor.ndim == 2:
         mean_y = Y_tensor.mean(axis=0, keepdims=True)
         P = U_probes @ U_probes.T
         projected_mean = mean_y @ P
         return Y_tensor - projected_mean
     else:
-        # For higher dims, apply per sample
         out = Y_tensor.copy()
         for i in range(out.shape[0]):
             mean_y = out[i].mean(axis=0, keepdims=True)
@@ -313,11 +321,9 @@ def compute_poisson_debiased_dd_cka(
     U_probes: np.ndarray | None = None,
     n_lags: int = 3,
 ) -> float:
-    # Multi-lag tangent DD-CKA with static (I-P_U) on mean
     if U_probes is not None:
         Y_A = remove_probe_projection(Y_A, U_probes)
         Y_B = remove_probe_projection(Y_B, U_probes)
-    # Simple multi-lag by stacking delayed versions
     def stack_lags(Y, lags):
         parts = [Y]
         for lag in range(1, lags+1):
@@ -333,12 +339,10 @@ def compute_poisson_debiased_dd_cka(
 # ============================================================================
 
 def run_gate0a_burst_reproduction(config: Stage1PreregConfig) -> Dict[str, float]:
-    # Calibrated irregular-burst nucleation dynamics
     rng = np.random.default_rng(config.master_seed)
     n_trials = 200
     ibnsi = []
     for _ in range(n_trials):
-        # Nucleation hazard + suprathresh flux
         base_rate = 0.12
         hazard = base_rate + 0.35 * rng.exponential(1.0)
         n_bursts = rng.poisson(hazard * 10)
@@ -353,7 +357,6 @@ def run_gate0a_burst_reproduction(config: Stage1PreregConfig) -> Dict[str, float
 def run_gate0c_synthetic_recovery(config: Stage1PreregConfig, seed: int = 2002) -> Dict[str, float]:
     rng = np.random.default_rng(seed)
     T, D = 200, config.dim_E
-    # Synthetic latent with known alignment
     latent = rng.standard_normal((T, D))
     recovered = latent + 0.05 * rng.standard_normal((T, D))
     shuffled = rng.permutation(recovered, axis=0)
@@ -371,18 +374,13 @@ def develop_spiking_receiver_B(
     config: Stage1PreregConfig,
     streams: CRNStreams,
 ) -> np.ndarray:
-    # Sign-free polar / fractional-power sensory frame
     T, N = donor_counts.shape
-    # Simple mean-field proxy preserving invariants
     env = donor_counts @ streams.rng_init.standard_normal((N, config.dim_E))
-    # Fractional power for sign-free frame
     cov = env.T @ env / T
     try:
         w, v = la.eigh(cov)
-        # Polar decomposition style sign-free
         sqrt_w = np.sqrt(np.clip(w, 0, None))
         U = v @ np.diag(sqrt_w)
-        # Normalize
         U = U / (la.norm(U, axis=0, keepdims=True) + 1e-12)
     except Exception:
         U = make_orthogonal_matrix(config.dim_E, streams.rng_init)
@@ -394,33 +392,28 @@ def evaluate_post_washout_probes(
     probes: np.ndarray,
     config: Stage1PreregConfig,
 ) -> Dict[str, float]:
-    # Dual-mode evaluation
     if residual_state.shape[0] < 10:
         return {"washout_rel_l2": 1.0, "probe_alignment": 0.0}
-    # Washout residual
     wash_end = int(config.t_wash_sec * 1000 / config.bin_width_ms)
     if residual_state.shape[0] > wash_end:
         post = residual_state[wash_end:]
         rel_l2 = float(la.norm(post.mean(axis=0)) / (la.norm(residual_state.mean(axis=0)) + 1e-12))
     else:
         rel_l2 = 0.001
-    # Probe alignment proxy
     alignment = debiased_linear_cka(residual_state[-probes.shape[0]:], probes) if probes is not None else 0.5
     return {"washout_rel_l2": rel_l2, "probe_alignment": alignment}
 
 def run_single_seed_all_arms(seed_idx: int, config: Stage1PreregConfig) -> Dict[str, Dict[str, float]]:
     streams = make_crn_streams(config.master_seed, seed_idx)
-    # Synthetic donor for in-silico
     T = int(30 * 1000 / config.bin_width_ms)
     N = 60
     donor = streams.rng_bg.poisson(5.0, size=(T, N)).astype(float)
     residual = develop_spiking_receiver_B(donor, config, streams)
     probes = streams.rng_probes.standard_normal((config.n_probes_K, config.dim_E))
     eval_res = evaluate_post_washout_probes(residual, probes, config)
-    # Arms
     intact = compute_poisson_debiased_dd_cka(residual, residual)
     tr = compute_poisson_debiased_dd_cka(residual, surrogate_reversed(residual))
-    jisi_proxy = intact * 0.95  # proxy
+    jisi_proxy = intact * 0.95
     return {
         "intact": {"dd_cka": intact, **eval_res},
         "tr_shift": {"dd_cka": tr},
@@ -444,7 +437,6 @@ def tost_paired_equivalence(x: np.ndarray, y: np.ndarray, margin: float = 0.05, 
     diff = x - y
     mean_diff = float(np.mean(diff))
     se = float(np.std(diff, ddof=1) / np.sqrt(len(diff)))
-    # Simple TOST proxy
     t_lower = (mean_diff + margin) / (se + 1e-12)
     t_upper = (mean_diff - margin) / (se + 1e-12)
     p_lower = float(stats.t.sf(t_lower, len(diff)-1))
@@ -463,7 +455,6 @@ def evaluate_preregistered_decision(
         reasons.append("Gate 0A failed")
     if not gate0c.get("passed", False):
         reasons.append("Gate 0C failed")
-    # Aggregate
     intact_scores = [r["intact"]["dd_cka"] for r in seed_records]
     mean_intact = float(np.mean(intact_scores))
     washout_vals = [r["intact"].get("washout_rel_l2", 1.0) for r in seed_records]
@@ -481,7 +472,7 @@ def evaluate_preregistered_decision(
     }
 
 # ============================================================================
-# 10. BRIAN2 EQUATIONS (export only)
+# 10. BRIAN2 EQUATIONS
 # ============================================================================
 
 def get_brian2_native_equations() -> Dict[str, str]:
