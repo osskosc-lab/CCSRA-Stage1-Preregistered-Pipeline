@@ -1,0 +1,51 @@
+name: CCSRA Stage 1 Preregistered Audit CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  verify-pipeline-and-guards:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Step 1 - Syntax & Bytecode Compilation Check
+        run: |
+          python -m py_compile ccsra_stage1_preregistered_pipeline.py
+          python -m py_compile ccsra_stage1_donor_connection_tests.py
+
+      - name: Step 2 - Run Donor Loader & Confound/Firewall Guard Suite
+        run: |
+          python ccsra_stage1_donor_connection_tests.py
+
+      - name: Step 3 - Run Preregistered Pipeline Smoke Audit (N=4 Paired CRN Seeds)
+        run: |
+          python ccsra_stage1_preregistered_pipeline.py --n-seeds 4 --t-wash 60.0 --bin-ms 5.0 --out-json test_manifest.json
+          python -c '
+          import json, sys
+          data = json.load(open("test_manifest.json"))
+          assert data["gate0a"]["passed"], "Gate 0A failed!"
+          assert data["gate0c"]["passed"], "Gate 0C failed!"
+          verdict = data["summary_report"]["verdict"]
+          print("Verified CI Verdict:", verdict)
+          assert verdict.startswith("SUPPORTED"), f"Unexpected verdict: {verdict}"
+          '
